@@ -1,6 +1,7 @@
 package passkit
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -1084,5 +1085,276 @@ func TestPassRelevantDate_GetSet(t *testing.T) {
 	pdr.EndDate = nil
 	if !pdr.IsValid() {
 		t.Errorf("PassRelevantDate should be valid. Reason: %v", pdr.GetValidationErrors())
+	}
+}
+
+func getBasicPosterGenericPass() Pass {
+	pass := getBasicPass()
+	f := getBasicField()
+	f.Value = "string"
+	pass.PosterGeneric = &PosterGeneric{PrimaryFields: []Field{f}}
+	return pass
+}
+
+func TestPass_PosterGenericValid(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.UseAutomaticColors = true
+	pass.SuppressHeaderDarkening = true
+
+	if !pass.IsValid() {
+		t.Errorf("Pass should be valid. Reason: %v", pass.GetValidationErrors())
+	}
+}
+
+func TestPass_PosterGenericWithoutLegacyStyle(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.Generic = nil
+
+	if pass.IsValid() {
+		t.Errorf("Pass should be invalid")
+	}
+
+	if len(pass.GetValidationErrors()) != 1 {
+		t.Errorf("Pass should have one errors. Have: %v", pass.GetValidationErrors())
+	}
+}
+
+func TestPass_InvalidPosterGenericWithInvalidLegacyStyle(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.Generic = &GenericPass{HeaderFields: []Field{getBasicField()}}
+	pass.PosterGeneric = &PosterGeneric{HeaderFields: []Field{getBasicField()}}
+
+	if len(pass.GetValidationErrors()) != 2 {
+		t.Errorf("Pass should have two errors. Have: %v", pass.GetValidationErrors())
+	}
+}
+
+func TestPass_PosterGenericFieldLimits(t *testing.T) {
+	f := getBasicField()
+	f.Value = "string"
+
+	pg := &PosterGeneric{
+		HeaderFields:  []Field{f, f},
+		PrimaryFields: []Field{f, f, f, f, f},
+		FooterFields:  []Field{f, f},
+	}
+
+	if pg.IsValid() {
+		t.Errorf("PosterGeneric should be invalid")
+	}
+
+	if len(pg.GetValidationErrors()) != 3 {
+		t.Errorf("PosterGeneric should have three errors. Have: %v", pg.GetValidationErrors())
+	}
+
+	pg = &PosterGeneric{
+		HeaderFields:  []Field{f},
+		PrimaryFields: []Field{f, f, f, f},
+		FooterFields:  []Field{f},
+	}
+
+	if !pg.IsValid() {
+		t.Errorf("PosterGeneric should be valid. Reason: %v", pg.GetValidationErrors())
+	}
+}
+
+func TestPass_PosterGenericOnlyKeysWithoutPosterGeneric(t *testing.T) {
+	pass := getBasicPass()
+	pass.UseAutomaticColors = true
+	pass.SuppressHeaderDarkening = true
+
+	if len(pass.GetValidationErrors()) != 2 {
+		t.Errorf("Pass should have two errors. Have: %v", pass.GetValidationErrors())
+	}
+}
+
+func TestPass_PosterGenericJSON(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.UseAutomaticColors = true
+	pass.SuppressHeaderDarkening = true
+
+	b, err := pass.toJSON()
+	if err != nil {
+		t.Errorf("Error marshalling json. %v", err)
+	}
+
+	s := string(b)
+	for _, key := range []string{`"posterGeneric":{`, `"generic":{`, `"useAutomaticColors":true`, `"suppressHeaderDarkening":true`} {
+		if !strings.Contains(s, key) {
+			t.Errorf("Pass JSON should contain %s. Have: %s", key, s)
+		}
+	}
+}
+
+func TestPass_PosterGenericWithEventTicket(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.Generic = nil
+	pass.EventTicket = &EventTicket{GenericPass: getBasicPass().Generic}
+
+	errs := pass.GetValidationErrors()
+	if len(errs) != 1 || !strings.Contains(errs[0], "PosterGeneric cannot be used with EventTicket") {
+		t.Errorf("Pass should have only the EventTicket error. Have: %v", errs)
+	}
+}
+
+func TestPass_PosterGenericWithBoardingPass(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.Generic = nil
+	pass.BoardingPass = &BoardingPass{GenericPass: getBasicPass().Generic, TransitType: TransitTypeAir}
+
+	errs := pass.GetValidationErrors()
+	if len(errs) != 1 || !strings.Contains(errs[0], "PosterGeneric cannot be used with BoardingPass") {
+		t.Errorf("Pass should have only the BoardingPass error. Have: %v", errs)
+	}
+}
+
+func TestPass_PosterGenericWithLegacyStyles(t *testing.T) {
+	legacy := getBasicPass().Generic
+
+	storeCardPass := getBasicPosterGenericPass()
+	storeCardPass.Generic = nil
+	storeCardPass.StoreCard = &StoreCard{GenericPass: legacy}
+
+	couponPass := getBasicPosterGenericPass()
+	couponPass.Generic = nil
+	couponPass.Coupon = &Coupon{GenericPass: legacy}
+
+	for name, pass := range map[string]Pass{"StoreCard": storeCardPass, "Coupon": couponPass} {
+		if !pass.IsValid() {
+			t.Errorf("PosterGeneric with %s should be valid. Reason: %v", name, pass.GetValidationErrors())
+		}
+	}
+}
+
+func TestPass_EmptyPosterGeneric(t *testing.T) {
+	pass := getBasicPass()
+	pass.PosterGeneric = NewPosterGeneric()
+
+	if !pass.IsValid() {
+		t.Errorf("Pass with empty PosterGeneric should be valid. Reason: %v", pass.GetValidationErrors())
+	}
+
+	b, err := pass.toJSON()
+	if err != nil {
+		t.Errorf("Error marshalling json. %v", err)
+	}
+
+	// The posterGeneric dictionary may be empty, but it must be present
+	if !strings.Contains(string(b), `"posterGeneric":{}`) {
+		t.Errorf("Pass JSON should contain an empty posterGeneric dictionary. Have: %s", string(b))
+	}
+}
+
+func TestPass_PosterGenericOmittedWhenNil(t *testing.T) {
+	pass := getBasicPass()
+
+	b, err := pass.toJSON()
+	if err != nil {
+		t.Errorf("Error marshalling json. %v", err)
+	}
+
+	s := string(b)
+	for _, key := range []string{"posterGeneric", "useAutomaticColors", "suppressHeaderDarkening"} {
+		if strings.Contains(s, key) {
+			t.Errorf("Pass JSON should not contain %s. Have: %s", key, s)
+		}
+	}
+}
+
+func TestPass_PosterGenericOnlyKeysFalseWithoutPosterGeneric(t *testing.T) {
+	pass := getBasicPass()
+	pass.UseAutomaticColors = false
+	pass.SuppressHeaderDarkening = false
+
+	if !pass.IsValid() {
+		t.Errorf("Pass should be valid. Reason: %v", pass.GetValidationErrors())
+	}
+}
+
+func TestPosterGeneric_HeroPrimaryField(t *testing.T) {
+	hero := Field{Key: "balance", Value: "12,450"}
+	tier := Field{Key: "tier", Label: "Tier", Value: "Gold"}
+
+	pass := getBasicPass()
+	pass.PosterGeneric = &PosterGeneric{PrimaryFields: []Field{hero, tier}}
+
+	if !pass.IsValid() {
+		t.Errorf("Pass should be valid. Reason: %v", pass.GetValidationErrors())
+	}
+
+	b, err := pass.toJSON()
+	if err != nil {
+		t.Errorf("Error marshalling json. %v", err)
+	}
+
+	// The hero treatment is triggered by the first primary field having no label
+	expected := `"posterGeneric":{"primaryFields":[{"key":"balance","value":"12,450"},{"key":"tier","label":"Tier","value":"Gold"}]}`
+	if !strings.Contains(string(b), expected) {
+		t.Errorf("Pass JSON should contain %s. Have: %s", expected, string(b))
+	}
+}
+
+func TestPosterGeneric_AddFields(t *testing.T) {
+	f := getBasicField()
+	f.Value = "string"
+
+	pg := NewPosterGeneric()
+	pg.AddHeaderField(f)
+	pg.AddPrimaryFields(f)
+	pg.AddFooterFields(f)
+	pg.AddBackFields(f)
+	pg.AddAdditionalInfoFields(f)
+
+	if len(pg.HeaderFields) != 1 || len(pg.PrimaryFields) != 1 || len(pg.FooterFields) != 1 ||
+		len(pg.BackFields) != 1 || len(pg.AdditionalInfoFields) != 1 {
+		t.Errorf("PosterGeneric should have one field in each array. Have: %+v", pg)
+	}
+
+	if !pg.IsValid() {
+		t.Errorf("PosterGeneric should be valid. Reason: %v", pg.GetValidationErrors())
+	}
+}
+
+func TestPosterGeneric_InvalidFieldInEachArray(t *testing.T) {
+	invalid := getBasicField()
+
+	arrays := map[string]*PosterGeneric{
+		"headerFields":         {HeaderFields: []Field{invalid}},
+		"primaryFields":        {PrimaryFields: []Field{invalid}},
+		"footerFields":         {FooterFields: []Field{invalid}},
+		"backFields":           {BackFields: []Field{invalid}},
+		"additionalInfoFields": {AdditionalInfoFields: []Field{invalid}},
+	}
+
+	for name, pg := range arrays {
+		if pg.IsValid() {
+			t.Errorf("PosterGeneric with invalid field in %s should be invalid", name)
+		}
+
+		if len(pg.GetValidationErrors()) != 1 {
+			t.Errorf("PosterGeneric with invalid field in %s should have one error. Have: %v", name, pg.GetValidationErrors())
+		}
+	}
+}
+
+func TestPosterGeneric_FieldLimitAndInvalidFieldErrorsAccumulate(t *testing.T) {
+	f := getBasicField()
+	f.Value = "string"
+
+	pg := &PosterGeneric{
+		PrimaryFields: []Field{f, f, f, f, getBasicField()},
+	}
+
+	if len(pg.GetValidationErrors()) != 2 {
+		t.Errorf("PosterGeneric should have two errors. Have: %v", pg.GetValidationErrors())
+	}
+}
+
+func TestPass_PosterGenericWithGroupingIdentifier(t *testing.T) {
+	pass := getBasicPosterGenericPass()
+	pass.GroupingIdentifier = "group"
+
+	if len(pass.GetValidationErrors()) != 1 {
+		t.Errorf("Pass should have one error. Have: %v", pass.GetValidationErrors())
 	}
 }

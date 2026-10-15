@@ -93,10 +93,13 @@ type Pass struct {
 	BackgroundColor            string                 `json:"backgroundColor,omitempty"`
 	FooterBackgroundColor      string                 `json:"footerBackgroundColor,omitempty"`
 	LabelColor                 string                 `json:"labelColor,omitempty"`
+	UseAutomaticColors         bool                   `json:"useAutomaticColors,omitempty"`
+	SuppressHeaderDarkening    bool                   `json:"suppressHeaderDarkening,omitempty"`
 	GroupingIdentifier         string                 `json:"groupingIdentifier,omitempty"`
 	Beacons                    []Beacon               `json:"beacons,omitempty"`
 	Locations                  []Location             `json:"locations,omitempty"`
 	Barcodes                   []Barcode              `json:"barcodes,omitempty"`
+	PosterGeneric              *PosterGeneric         `json:"posterGeneric,omitempty"`
 	EventTicket                *EventTicket           `json:"eventTicket,omitempty"`
 	Coupon                     *Coupon                `json:"coupon,omitempty"`
 	StoreCard                  *StoreCard             `json:"storeCard,omitempty"`
@@ -197,6 +200,11 @@ func (p *Pass) toJSON() ([]byte, error) {
 	return json.Marshal(p)
 }
 
+// hasLegacyStyle reports whether one of the original pass styles is set.
+func (p *Pass) hasLegacyStyle() bool {
+	return p.EventTicket != nil || p.BoardingPass != nil || p.Coupon != nil || p.StoreCard != nil || p.Generic != nil
+}
+
 func (p *Pass) IsValid() bool {
 	return len(p.GetValidationErrors()) == 0
 }
@@ -211,8 +219,12 @@ func (p *Pass) GetValidationErrors() []string {
 		validationErrors = append(validationErrors, fmt.Sprintf("Pass: Not all required Fields are set. SerialNumber: %q, PassTypeIdentifier: %q, teamIdentifier: %q, Description: ,%q, FormatVersion: %q, OrganizationName: %q", p.SerialNumber, p.PassTypeIdentifier, p.TeamIdentifier, p.Description, p.FormatVersion, p.OrganizationName))
 	}
 
-	if p.EventTicket == nil && p.BoardingPass == nil && p.Coupon == nil && p.StoreCard == nil && p.Generic == nil {
-		validationErrors = append(validationErrors, fmt.Sprintf("Pass: No pass was set. EventTicket: %v, BoardingPass: %v, Coupon: %v, StoreCard: %v, Generic: %v", p.EventTicket, p.BoardingPass, p.Coupon, p.StoreCard, p.Generic))
+	if !p.hasLegacyStyle() {
+		if p.PosterGeneric != nil {
+			validationErrors = append(validationErrors, "Pass: PosterGeneric requires a legacy style (StoreCard, Generic or Coupon) to be set for compatibility with devices prior to iOS 27")
+		} else {
+			validationErrors = append(validationErrors, fmt.Sprintf("Pass: No pass was set. EventTicket: %v, BoardingPass: %v, Coupon: %v, StoreCard: %v, Generic: %v", p.EventTicket, p.BoardingPass, p.Coupon, p.StoreCard, p.Generic))
+		}
 	}
 
 	if p.EventTicket != nil && (p.BoardingPass != nil || p.Coupon != nil || p.StoreCard != nil || p.Generic != nil) {
@@ -236,6 +248,15 @@ func (p *Pass) GetValidationErrors() []string {
 			"Pass: The authenticationToken needs to be at least "+strconv.Itoa(expectedAuthTokenLen)+" characters long")
 	}
 
+	// Validate PosterGeneric only applied to relevant pass types
+	if p.PosterGeneric != nil && p.EventTicket != nil {
+		validationErrors = append(validationErrors, "Pass: PosterGeneric cannot be used with EventTicket, use the poster event ticket style (preferredStyleSchemes) instead")
+	}
+
+	if p.PosterGeneric != nil && p.BoardingPass != nil {
+		validationErrors = append(validationErrors, "Pass: PosterGeneric cannot be used with BoardingPass, use the semantic boarding pass style (preferredStyleSchemes) instead")
+	}
+
 	if p.EventTicket != nil && !p.EventTicket.IsValid() {
 		validationErrors = append(validationErrors, p.EventTicket.GetValidationErrors()...)
 	} else if p.BoardingPass != nil && !p.BoardingPass.IsValid() {
@@ -248,12 +269,25 @@ func (p *Pass) GetValidationErrors() []string {
 		validationErrors = append(validationErrors, p.Generic.GetValidationErrors()...)
 	}
 
+	// PosterGeneric is set alongside a legacy style, so it is validated independently
+	if p.PosterGeneric != nil && !p.PosterGeneric.IsValid() {
+		validationErrors = append(validationErrors, p.PosterGeneric.GetValidationErrors()...)
+	}
+
+	if p.PosterGeneric == nil && p.UseAutomaticColors {
+		validationErrors = append(validationErrors, "Pass: useAutomaticColors is only applicable to PosterGeneric passes")
+	}
+
+	if p.PosterGeneric == nil && p.SuppressHeaderDarkening {
+		validationErrors = append(validationErrors, "Pass: suppressHeaderDarkening is only applicable to PosterGeneric passes")
+	}
+
 	// If appLaunchURL key is present, the associatedStoreIdentifiers key must also be present
 	if p.AppLaunchURL != "" && len(p.AssociatedStoreIdentifiers) == 0 {
 		validationErrors = append(validationErrors, "Pass: The appLaunchURL requires associatedStoreIdentifiers to be specified")
 	}
 
-	if !(p.EventTicket == nil && p.BoardingPass == nil && p.Coupon == nil && p.StoreCard == nil && p.Generic == nil) {
+	if p.hasLegacyStyle() {
 		// groupingIdentifier key is optional for event tickets and boarding passes; otherwise not allowed
 		if strings.TrimSpace(p.GroupingIdentifier) != "" && p.EventTicket == nil && p.BoardingPass == nil {
 			validationErrors = append(validationErrors, "Pass: The groupingIdentifier is optional for event tickets and boarding passes, otherwise not allowed")
@@ -334,6 +368,7 @@ func (gp *GenericPass) AddAuxiliaryFields(field Field) {
 func (gp *GenericPass) AddBackFields(field Field) {
 	gp.BackFields = append(gp.BackFields, field)
 }
+
 func (gp *GenericPass) AddAdditionalInfoFields(field Field) {
 	gp.AdditionalInfoFields = append(gp.AdditionalInfoFields, field)
 }
@@ -352,6 +387,85 @@ func (gp *GenericPass) GetValidationErrors() []string {
 	fields = append(fields, gp.AuxiliaryFields)
 	fields = append(fields, gp.BackFields)
 	fields = append(fields, gp.AdditionalInfoFields)
+
+	for _, fieldList := range fields {
+		for _, field := range fieldList {
+			if !field.IsValid() {
+				validationErrors = append(validationErrors, field.GetValidationErrors()...)
+			}
+		}
+	}
+
+	return validationErrors
+}
+
+const (
+	posterGenericMaxHeaderFields  = 1
+	posterGenericMaxPrimaryFields = 4
+	posterGenericMaxFooterFields  = 1
+)
+
+func NewPosterGeneric() *PosterGeneric {
+	return &PosterGeneric{}
+}
+
+// PosterGeneric Representation of the iOS 27 poster generic style. It must be set alongside a legacy style
+// (StoreCard, Generic or Coupon) so the pass can still be displayed on older devices. EventTickets should use
+// the poster event ticket style and BoardingPasses the semantic boarding pass style (preferredStyleSchemes) instead.
+// Secondary and auxiliary fields are not supported by this style.
+type PosterGeneric struct {
+	HeaderFields         []Field `json:"headerFields,omitempty"`
+	PrimaryFields        []Field `json:"primaryFields,omitempty"`
+	FooterFields         []Field `json:"footerFields,omitempty"`
+	BackFields           []Field `json:"backFields,omitempty"`
+	AdditionalInfoFields []Field `json:"additionalInfoFields,omitempty"`
+}
+
+func (pgp *PosterGeneric) AddHeaderField(field Field) {
+	pgp.HeaderFields = append(pgp.HeaderFields, field)
+}
+
+func (pgp *PosterGeneric) AddPrimaryFields(field Field) {
+	pgp.PrimaryFields = append(pgp.PrimaryFields, field)
+}
+
+func (pgp *PosterGeneric) AddFooterFields(field Field) {
+	pgp.FooterFields = append(pgp.FooterFields, field)
+}
+
+func (pgp *PosterGeneric) AddBackFields(field Field) {
+	pgp.BackFields = append(pgp.BackFields, field)
+}
+
+func (pgp *PosterGeneric) AddAdditionalInfoFields(field Field) {
+	pgp.AdditionalInfoFields = append(pgp.AdditionalInfoFields, field)
+}
+
+func (pgp *PosterGeneric) IsValid() bool {
+	return len(pgp.GetValidationErrors()) == 0
+}
+
+func (pgp *PosterGeneric) GetValidationErrors() []string {
+	var validationErrors []string
+
+	if len(pgp.HeaderFields) > posterGenericMaxHeaderFields {
+		validationErrors = append(validationErrors, fmt.Sprintf("PosterGeneric: At most %d headerFields are allowed. Have: %d", posterGenericMaxHeaderFields, len(pgp.HeaderFields)))
+	}
+
+	if len(pgp.PrimaryFields) > posterGenericMaxPrimaryFields {
+		validationErrors = append(validationErrors, fmt.Sprintf("PosterGeneric: At most %d primaryFields are allowed. Have: %d", posterGenericMaxPrimaryFields, len(pgp.PrimaryFields)))
+	}
+
+	if len(pgp.FooterFields) > posterGenericMaxFooterFields {
+		validationErrors = append(validationErrors, fmt.Sprintf("PosterGeneric: At most %d footerFields are allowed. Have: %d", posterGenericMaxFooterFields, len(pgp.FooterFields)))
+	}
+
+	var fields [][]Field
+	fields = append(fields, pgp.HeaderFields)
+	fields = append(fields, pgp.PrimaryFields)
+	fields = append(fields, pgp.FooterFields)
+	fields = append(fields, pgp.BackFields)
+	fields = append(fields, pgp.AdditionalInfoFields)
 
 	for _, fieldList := range fields {
 		for _, field := range fieldList {
