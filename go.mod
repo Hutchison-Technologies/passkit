@@ -1,4 +1,4 @@
-module github.com/alvinbaena/passkit
+module github.com/Hutchison-Technologies/passkit
 
 go 1.25.0
 
