@@ -1,6 +1,7 @@
 package passkit
 
 import (
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -154,6 +155,10 @@ func (m *InMemoryPassTemplate) downloadFile(u url.URL) ([]byte, error) {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(response.Body)
+
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, fmt.Errorf("error downloading file %s: unexpected status %s", u.Redacted(), response.Status)
+	}
 
 	b, err := io.ReadAll(response.Body)
 	if err != nil {

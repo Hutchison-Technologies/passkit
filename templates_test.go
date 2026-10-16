@@ -126,3 +126,85 @@ func TestInMemoryPassTemplate_GetAllFilesReturnsSnapshot(t *testing.T) {
 		t.Error("files added after GetAllFiles should not show up in a previously returned map")
 	}
 }
+
+func TestInMemoryPassTemplate_AddFileFromURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok.png":
+			_, _ = w.Write([]byte("remote file data"))
+		case "/server-error.png":
+			http.Error(w, "server error", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: "successful response is added", path: "/ok.png", wantErr: false},
+		{name: "not found response is rejected", path: "/missing.png", wantErr: true},
+		{name: "server error response is rejected", path: "/server-error.png", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(srv.URL + tt.path)
+			if err != nil {
+				t.Fatalf("could not parse test server url. %v", err)
+			}
+
+			template := NewInMemoryPassTemplate()
+			err = template.AddFileFromURL(BundleIcon, *u)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("AddFileFromURL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			files, err := template.GetAllFiles()
+			if err != nil {
+				t.Fatalf("could not get all files. %v", err)
+			}
+
+			data, ok := files[BundleIcon]
+			if tt.wantErr {
+				if ok {
+					t.Errorf("file should not be added when download fails, got %q", data)
+				}
+				return
+			}
+
+			if string(data) != "remote file data" {
+				t.Errorf("unexpected file data. got %q", data)
+			}
+		})
+	}
+}
+
+func TestInMemoryPassTemplate_AddFileFromURLLocalizedRejectsErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL + "/missing.png")
+	if err != nil {
+		t.Fatalf("could not parse test server url. %v", err)
+	}
+
+	template := NewInMemoryPassTemplate()
+	if err := template.AddFileFromURLLocalized(BundleIcon, "en", *u); err == nil {
+		t.Fatal("expected error for not found response")
+	}
+
+	files, err := template.GetAllFiles()
+	if err != nil {
+		t.Fatalf("could not get all files. %v", err)
+	}
+
+	if len(files) != 0 {
+		t.Errorf("no files should be added when download fails, got %d", len(files))
+	}
+}
